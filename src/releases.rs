@@ -49,7 +49,7 @@ pub fn fetch_versions() -> Result<Vec<ReleaseInfo>> {
         if let Some(platform_info) = entry.get(target) {
             if let Some(url) = platform_info.get("tarball").and_then(|v| v.as_str()) {
                 results.push(ReleaseInfo {
-                    version: if is_master { key.clone() } else { version },
+                    version,
                     tarball_url: url.to_string(),
                     is_master,
                 });
