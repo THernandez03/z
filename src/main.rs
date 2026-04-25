@@ -1,3 +1,6 @@
+#![deny(clippy::all, clippy::pedantic, clippy::nursery)]
+#![allow(clippy::module_name_repetitions)]
+
 mod arch;
 mod cache;
 mod install;
@@ -23,7 +26,7 @@ struct Cli {
 enum Commands {
     /// Install a Zig version
     Install {
-        /// Version to install (e.g. 0.13.0, master, latest)
+        /// Version to install (e.g. 0.13.0, master, lts, latest, canary, next)
         version: String,
     },
     /// List locally cached versions
@@ -88,7 +91,7 @@ fn main() -> Result<()> {
         }
         Some(Commands::Run { version, args }) => install::run(&version, &args)?,
         Some(Commands::Download { version }) => install::download_only(&version)?,
-        Some(Commands::Doctor) => diagnostics::doctor()?,
+        Some(Commands::Doctor) => diagnostics::doctor(),
         Some(Commands::Uninstall) => symlink::uninstall()?,
     }
 
@@ -96,10 +99,9 @@ fn main() -> Result<()> {
 }
 
 mod diagnostics {
-    use anyhow::Result;
     use crate::{cache, symlink};
 
-    pub fn doctor() -> Result<()> {
+    pub fn doctor() {
         println!("z — Zig version manager diagnostics");
         println!();
 
@@ -111,10 +113,8 @@ mod diagnostics {
 
         let active = symlink::active_version();
         match active {
-            Some(v) => println!("  active version : {}", v),
+            Some(v) => println!("  active version : {v}"),
             None => println!("  active version : (none)"),
         }
-
-        Ok(())
     }
 }

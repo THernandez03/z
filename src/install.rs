@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{self, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use crate::{cache, releases, symlink};
@@ -12,15 +12,15 @@ pub fn install(version_str: &str) -> Result<()> {
     let version = &release.version;
 
     if cache::is_cached(version) {
-        println!("Version {} is already cached, activating...", version);
+        println!("Version {version} is already cached, activating...");
     } else {
-        println!("Downloading Zig {}...", version);
+        println!("Downloading Zig {version}...");
         download_version(&release.tarball_url, version)?;
     }
 
-    println!("Activating Zig {}...", version);
+    println!("Activating Zig {version}...");
     symlink::activate(version)?;
-    println!("Installed Zig {} successfully.", version);
+    println!("Installed Zig {version} successfully.");
     Ok(())
 }
 
@@ -29,10 +29,10 @@ pub fn download_only(version_str: &str) -> Result<()> {
     let release = releases::resolve(version_str)?;
     let version = &release.version;
     if cache::is_cached(version) {
-        println!("Version {} is already cached.", version);
+        println!("Version {version} is already cached.");
         return Ok(());
     }
-    println!("Downloading Zig {}...", version);
+    println!("Downloading Zig {version}...");
     download_version(&release.tarball_url, version)
 }
 
@@ -42,7 +42,7 @@ pub fn run(version_str: &str, args: &[String]) -> Result<()> {
     let version = &release.version;
 
     if !cache::is_cached(version) {
-        println!("Version {} is not cached. Downloading...", version);
+        println!("Version {version} is not cached. Downloading...");
         download_version(&release.tarball_url, version)?;
     }
 
@@ -50,7 +50,7 @@ pub fn run(version_str: &str, args: &[String]) -> Result<()> {
     let status = Command::new(&binary)
         .args(args)
         .status()
-        .with_context(|| format!("Failed to run zig {}", version))?;
+        .with_context(|| format!("Failed to run zig {version}"))?;
 
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
@@ -63,7 +63,9 @@ fn download_version(url: &str, version: &str) -> Result<()> {
     fs::create_dir_all(&dest_dir).context("Failed to create cache directory")?;
 
     // Determine archive type
-    let is_zip = url.ends_with(".zip");
+    let is_zip = std::path::Path::new(url)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
     let is_xz = url.ends_with(".tar.xz");
 
     // Download to a temp file
@@ -90,9 +92,8 @@ fn download_version(url: &str, version: &str) -> Result<()> {
             }
             writer.write_all(&buf[..n])?;
             downloaded += n as u64;
-            if total > 0 {
-                let pct = downloaded * 100 / total;
-                print!("\r  {}/{} bytes ({}%)", downloaded, total, pct);
+            if let Some(pct) = (downloaded * 100).checked_div(total) {
+                print!("\r  {downloaded}/{total} bytes ({pct}%)");
                 io::stdout().flush()?;
             }
         }
