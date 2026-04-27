@@ -4,6 +4,8 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::Path;
 use std::process::Command;
 
+use console::style;
+
 use crate::{cache, releases, symlink};
 
 /// Install a Zig version and activate it.
@@ -12,20 +14,40 @@ pub fn install(version_str: &str) -> Result<()> {
     let version = &release.version;
 
     if symlink::active_version().as_deref() == Some(version.as_str()) {
-        println!("Zig {version} is already the active version.");
+        println!(
+            "{} Zig {} is already the active version.",
+            style("✓").green().bold(),
+            style(version).cyan().bold(),
+        );
         return Ok(());
     }
 
     if cache::is_cached(version) {
-        println!("Version {version} is already cached, activating...");
+        println!(
+            "{} Zig {} is already cached.",
+            style("◆").dim(),
+            style(version).cyan(),
+        );
     } else {
-        println!("Downloading Zig {version}...");
+        println!(
+            "{} Downloading Zig {}...",
+            style("⬇").cyan(),
+            style(version).cyan().bold(),
+        );
         download_version(&release.tarball_url, version)?;
     }
 
-    println!("Activating Zig {version}...");
+    println!(
+        "{} Activating Zig {}...",
+        style("◆").magenta(),
+        style(version).cyan().bold(),
+    );
     symlink::activate(version)?;
-    println!("Installed Zig {version} successfully.");
+    println!(
+        "{} Installed Zig {} successfully.",
+        style("✓").green().bold(),
+        style(version).cyan().bold(),
+    );
     Ok(())
 }
 

@@ -70,7 +70,7 @@ pub fn active_version() -> Option<String> {
 }
 
 /// Remove the active `~/.z/bin` directory symlink (does not remove cache).
-pub fn uninstall() -> Result<()> {
+pub fn uninstall() {
     let bin = bin_dir();
 
     if bin.symlink_metadata().is_ok() {
@@ -82,8 +82,6 @@ pub fn uninstall() -> Result<()> {
 
     let marker = prefix().join(".active");
     fs::remove_file(marker).ok();
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -193,7 +191,7 @@ mod tests {
             fs::write(vdir.join("zig"), b"#!/bin/sh").unwrap();
 
             activate("0.13.0").unwrap();
-            uninstall().unwrap();
+            uninstall();
 
             let link = base.join("bin").join("zig");
             assert!(!link.exists());
@@ -205,7 +203,7 @@ mod tests {
     #[test]
     fn uninstall_is_ok_when_nothing_installed() {
         with_temp_prefix(|_| {
-            assert!(uninstall().is_ok());
+            uninstall();
         });
     }
 }

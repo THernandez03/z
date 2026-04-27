@@ -92,7 +92,7 @@ fn main() -> Result<()> {
         Some(Commands::Run { version, args }) => install::run(&version, &args)?,
         Some(Commands::Download { version }) => install::download_only(&version)?,
         Some(Commands::Doctor) => diagnostics::doctor(),
-        Some(Commands::Uninstall) => symlink::uninstall()?,
+        Some(Commands::Uninstall) => symlink::uninstall(),
     }
 
     Ok(())
