@@ -11,6 +11,11 @@ pub fn install(version_str: &str) -> Result<()> {
     let release = releases::resolve(version_str)?;
     let version = &release.version;
 
+    if symlink::active_version().as_deref() == Some(version.as_str()) {
+        println!("Zig {version} is already the active version.");
+        return Ok(());
+    }
+
     if cache::is_cached(version) {
         println!("Version {version} is already cached, activating...");
     } else {
