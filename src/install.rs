@@ -12,8 +12,9 @@ use crate::{cache, releases, symlink};
 pub fn install(version_str: &str) -> Result<()> {
     let release = releases::resolve(version_str)?;
     let version = &release.version;
+    let from = symlink::active_version();
 
-    if symlink::active_version().as_deref() == Some(version.as_str()) {
+    if from.as_deref() == Some(version.as_str()) {
         println!(
             "{} Zig {} is already the active version.",
             style("✓").green().bold(),
@@ -37,11 +38,19 @@ pub fn install(version_str: &str) -> Result<()> {
         download_version(&release.tarball_url, version)?;
     }
 
-    println!(
-        "{} Activating Zig {}...",
-        style("◆").magenta(),
-        style(version).cyan().bold(),
-    );
+    match &from {
+        Some(f) => println!(
+            "{} Activating Zig {} → {}...",
+            style("◆").magenta(),
+            style(f).cyan(),
+            style(version).cyan().bold(),
+        ),
+        None => println!(
+            "{} Activating Zig {}...",
+            style("◆").magenta(),
+            style(version).cyan().bold(),
+        ),
+    }
     symlink::activate(version)?;
     println!(
         "{} Installed Zig {} successfully.",
