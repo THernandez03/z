@@ -89,8 +89,8 @@ fn resolve_from(version_str: &str, versions: &[ReleaseInfo]) -> Result<ReleaseIn
 
     // Handle convenience aliases
     match label {
-        // canary / latest / next  →  master (bleeding-edge nightly build)
-        "canary" | "latest" | "next" => {
+        // canary / latest / next / nightly / edge  →  master (bleeding-edge nightly build)
+        "canary" | "latest" | "next" | "nightly" | "edge" => {
             return versions
                 .iter()
                 .find(|v| v.is_master)
@@ -201,6 +201,20 @@ mod tests {
     fn alias_next_resolves_to_master() {
         let releases = [make_release("master", true), make_release("0.13.0", false)];
         let r = resolve_in(&releases, "next").unwrap();
+        assert!(r.is_master);
+    }
+
+    #[test]
+    fn alias_nightly_resolves_to_master() {
+        let releases = [make_release("master", true), make_release("0.13.0", false)];
+        let r = resolve_in(&releases, "nightly").unwrap();
+        assert!(r.is_master);
+    }
+
+    #[test]
+    fn alias_edge_resolves_to_master() {
+        let releases = [make_release("master", true), make_release("0.13.0", false)];
+        let r = resolve_in(&releases, "edge").unwrap();
         assert!(r.is_master);
     }
 
