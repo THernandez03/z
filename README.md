@@ -108,6 +108,15 @@ z doctor
 
 No subshells. No profile setup. Just a symlink.
 
+## Related Projects
+
+| Project | Runtime |
+|---------|---------|
+| [n](https://github.com/THernandez03/n) | Node.js version manager |
+| [b](https://github.com/THernandez03/b) | Bun version manager |
+| [d](https://github.com/THernandez03/d) | Deno version manager |
+| [r](https://github.com/THernandez03/r) | Rust version manager |
+
 ## License
 
 MIT
