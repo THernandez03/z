@@ -23,6 +23,18 @@
 
 ## Installation
 
+### Pre-built binary (no Rust required)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/THernandez03/z/main/install.sh | sh
+```
+
+This installs `z` to `~/.local/bin/z`. You can override the destination:
+
+```bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/THernandez03/z/main/install.sh | sh
+```
+
 ### From source (requires Rust)
 
 ```bash
@@ -40,7 +52,8 @@ Add `~/.z/bin` to your `PATH`:
 ```bash
 # bash / zsh
 export Z_PREFIX="$HOME/.z"
-export PATH="$Z_PREFIX/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"  # for the z binary
+export PATH="$Z_PREFIX/bin:$PATH"     # for managed Zig binaries
 ```
 
 Optional environment variables:
