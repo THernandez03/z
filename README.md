@@ -104,6 +104,14 @@ z update
 z uninstall
 ```
 
+## Version Aliases
+
+| Alias    | Resolves to            |
+| -------- | ---------------------- |
+| `master` | Latest nightly build   |
+| `latest` | Same as `master`       |
+| `0.13`   | Latest patch in 0.13.x |
+
 ## How It Works
 
 `z` downloads prebuilt Zig tarballs from [ziglang.org/download](https://ziglang.org/download/index.json), caches them under `~/.z/versions/<version>/`, and creates a symlink at `~/.z/bin/zig` pointing to the selected version.
