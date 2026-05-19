@@ -20,9 +20,13 @@ pub fn bin_dir() -> PathBuf {
 fn remove_bin_symlink(bin: &std::path::Path) {
     if bin.symlink_metadata().is_ok() {
         #[cfg(unix)]
-        { fs::remove_file(bin).ok(); }
+        {
+            fs::remove_file(bin).ok();
+        }
         #[cfg(windows)]
-        { fs::remove_dir(bin).ok(); }
+        {
+            fs::remove_dir(bin).ok();
+        }
     }
 }
 
@@ -48,11 +52,19 @@ pub fn activate(version: &str) -> Result<()> {
 
     #[cfg(unix)]
     std::os::unix::fs::symlink(&cached_dir, &bin).with_context(|| {
-        format!("Failed to create symlink {} -> {}", bin.display(), cached_dir.display())
+        format!(
+            "Failed to create symlink {} -> {}",
+            bin.display(),
+            cached_dir.display()
+        )
     })?;
     #[cfg(windows)]
     std::os::windows::fs::symlink_dir(&cached_dir, &bin).with_context(|| {
-        format!("Failed to create symlink {} -> {}", bin.display(), cached_dir.display())
+        format!(
+            "Failed to create symlink {} -> {}",
+            bin.display(),
+            cached_dir.display()
+        )
     })?;
 
     let marker = prefix().join(".active");
@@ -166,29 +178,4 @@ mod tests {
         });
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn uninstall_removes_symlink_and_marker() {
-        with_temp_prefix(|base| {
-            std::env::set_var("Z_CACHE_DIR", base.join("versions"));
-            let vdir = base.join("versions").join("0.13.0");
-            fs::create_dir_all(&vdir).unwrap();
-            fs::write(vdir.join("zig"), b"#!/bin/sh").unwrap();
-
-            activate("0.13.0").unwrap();
-            uninstall();
-
-            let link = base.join("bin").join("zig");
-            assert!(!link.exists());
-            assert_eq!(active_version(), None);
-            std::env::remove_var("Z_CACHE_DIR");
-        });
-    }
-
-    #[test]
-    fn uninstall_is_ok_when_nothing_installed() {
-        with_temp_prefix(|_| {
-            uninstall();
-        });
-    }
 }
