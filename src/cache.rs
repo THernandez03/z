@@ -36,7 +36,7 @@ pub fn which(version: &str) -> Result<PathBuf> {
     if path.exists() {
         Ok(path)
     } else {
-        anyhow::bail!("Version '{version}' is not cached. Run `z install {version}` first.")
+        anyhow::bail!("Version '{version}' is not cached. Run `z {version}` to install it.")
     }
 }
 

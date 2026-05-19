@@ -1,7 +1,5 @@
 # z — Interactively Manage Your Zig Versions
 
-> Inspired by [tj/n](https://github.com/tj/n). Written in Rust.
-
 `z` is a simple, no-fuss Zig version manager. Download, cache, and switch between Zig versions with a single command.
 
 ## Features
@@ -15,11 +13,11 @@
 
 ## Supported Platforms
 
-| OS      | Architectures                         |
-|---------|---------------------------------------|
-| Linux   | x86_64, aarch64, arm, riscv64         |
-| macOS   | x86_64, aarch64                       |
-| Windows | x86_64, aarch64                       |
+| OS      | Architectures                 |
+| ------- | ----------------------------- |
+| Linux   | x86_64, aarch64, arm, riscv64 |
+| macOS   | x86_64, aarch64               |
+| Windows | x86_64, aarch64               |
 
 ## Installation
 
@@ -58,18 +56,18 @@ export PATH="$Z_PREFIX/bin:$PATH"     # for managed Zig binaries
 
 Optional environment variables:
 
-| Variable      | Default        | Description                          |
-|---------------|----------------|--------------------------------------|
-| `Z_PREFIX`    | `~/.z`         | Root installation prefix             |
-| `Z_CACHE_DIR` | `~/.z/versions`| Where downloaded versions are stored |
+| Variable      | Default         | Description                          |
+| ------------- | --------------- | ------------------------------------ |
+| `Z_PREFIX`    | `~/.z`          | Root installation prefix             |
+| `Z_CACHE_DIR` | `~/.z/versions` | Where downloaded versions are stored |
 
 ## Usage
 
-```
-# Install a specific version
+```bash
+# Install and activate a version
 z 0.13.0
-z install 0.13.0
-z install master
+z master
+z latest
 
 # Interactive picker from cached versions
 z
@@ -80,8 +78,8 @@ z ls
 # List remote versions
 z ls-remote
 
-# Download without activating
-z download 0.12.1
+# Fetch into cache without activating
+z fetch 0.12.1
 
 # Show path to a cached zig binary
 z which 0.13.0
@@ -89,17 +87,21 @@ z which 0.13.0
 # Run a specific version
 z run 0.13.0 -- version
 
-# Remove a cached version
-z rm 0.12.0
+# Remove a cached version (interactive picker if no version given)
+z remove 0.12.0
+z rm 0.12.0         # alias
 
 # Remove all cached versions except the active one
 z prune
 
-# Uninstall active Zig
-z uninstall
+# Show info
+z info
 
-# Diagnostics
-z doctor
+# Update z itself
+z update
+
+# Fully remove z + all cached versions (requires confirmation)
+z uninstall
 ```
 
 ## How It Works
@@ -110,12 +112,12 @@ No subshells. No profile setup. Just a symlink.
 
 ## Related Projects
 
-| Project | Runtime |
-|---------|---------|
+| Project                                | Runtime                 |
+| -------------------------------------- | ----------------------- |
 | [n](https://github.com/THernandez03/n) | Node.js version manager |
-| [b](https://github.com/THernandez03/b) | Bun version manager |
-| [d](https://github.com/THernandez03/d) | Deno version manager |
-| [r](https://github.com/THernandez03/r) | Rust version manager |
+| [b](https://github.com/THernandez03/b) | Bun version manager     |
+| [d](https://github.com/THernandez03/d) | Deno version manager    |
+| [r](https://github.com/THernandez03/r) | Rust version manager    |
 
 ## License
 
