@@ -1,6 +1,6 @@
 [package]
 name = "z"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Interactively manage your Zig versions"
 license = "MIT"
