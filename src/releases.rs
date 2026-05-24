@@ -57,7 +57,7 @@ pub fn fetch_versions() -> Result<Vec<ReleaseInfo>> {
         }
     }
 
-    // Sort: master first, then descending semver
+    // Sort: master first, then descending semver (numeric, not lexicographic)
     results.sort_by(|a, b| {
         if a.is_master {
             return std::cmp::Ordering::Less;
@@ -65,8 +65,7 @@ pub fn fetch_versions() -> Result<Vec<ReleaseInfo>> {
         if b.is_master {
             return std::cmp::Ordering::Greater;
         }
-        // Compare version strings (simple lexicographic on semver parts)
-        b.version.cmp(&a.version)
+        parse_semver(&b.version).cmp(&parse_semver(&a.version))
     });
 
     Ok(results)
@@ -82,26 +81,46 @@ pub fn resolve(version_str: &str) -> Result<ReleaseInfo> {
     resolve_from(version_str, &versions)
 }
 
+/// Parse a semver string "X.Y.Z" into a comparable numeric tuple.
+/// Non-numeric parts (e.g. pre-release suffixes) parse as 0.
+fn parse_semver(v: &str) -> (u32, u32, u32) {
+    let mut parts = v.splitn(3, '.').map(|p| p.parse::<u32>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
 /// Inner resolution logic that operates on a pre-built slice, allowing tests
 /// to bypass the network.
 fn resolve_from(version_str: &str, versions: &[ReleaseInfo]) -> Result<ReleaseInfo> {
-    let label = version_str.trim_start_matches('v');
+    let v = version_str.trim();
+
+    // Reject v-prefixed version strings
+    if v.starts_with('v') && v[1..].starts_with(|c: char| c.is_ascii_digit()) {
+        anyhow::bail!("No Zig release found matching '{v}'");
+    }
+
+    if v == "beta" {
+        anyhow::bail!("'beta' channel is not supported for Zig");
+    }
 
     // Handle convenience aliases
-    match label {
+    match v {
         // canary / latest / next / nightly / edge  →  master (bleeding-edge nightly build)
         "canary" | "latest" | "next" | "nightly" | "edge" => {
             return versions
                 .iter()
-                .find(|v| v.is_master)
+                .find(|r| r.is_master)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("No master/nightly release found"));
         }
-        // lts / stable  →  highest stable (non-master) release
-        "lts" | "stable" => {
+        // lts / stable / current  →  highest stable (non-master) release
+        "lts" | "stable" | "current" => {
             return versions
                 .iter()
-                .find(|v| !v.is_master)
+                .find(|r| !r.is_master)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("No stable release found"));
         }
@@ -109,16 +128,16 @@ fn resolve_from(version_str: &str, versions: &[ReleaseInfo]) -> Result<ReleaseIn
     }
 
     // Exact match on version field or project-native key (e.g. "master")
-    for v in versions {
-        if v.version == label || (v.is_master && label == "master") {
-            return Ok(v.clone());
+    for r in versions {
+        if r.version == v || (r.is_master && v == "master") {
+            return Ok(r.clone());
         }
     }
 
     // Prefix match (e.g. "0.13" matches "0.13.0")
-    for v in versions {
-        if v.version.starts_with(label) {
-            return Ok(v.clone());
+    for r in versions {
+        if r.version.starts_with(v) {
+            return Ok(r.clone());
         }
     }
 
@@ -164,9 +183,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_strips_leading_v() {
+    fn resolve_v_prefix_rejected() {
         let releases = [make_release("0.13.0", false)];
-        let r = resolve_in(&releases, "v0.13.0").unwrap();
+        assert!(resolve_in(&releases, "v0.13.0").is_err());
+    }
+
+    #[test]
+    fn resolve_beta_returns_error() {
+        let releases = [make_release("0.13.0", false)];
+        assert!(resolve_in(&releases, "beta").is_err());
+    }
+
+    #[test]
+    fn resolve_current_returns_stable() {
+        let releases = [make_release("master", true), make_release("0.13.0", false)];
+        let r = resolve_in(&releases, "current").unwrap();
+        assert!(!r.is_master);
         assert_eq!(r.version, "0.13.0");
     }
 
@@ -271,10 +303,29 @@ mod tests {
             if b.is_master {
                 return std::cmp::Ordering::Greater;
             }
-            b.version.cmp(&a.version)
+            parse_semver(&b.version).cmp(&parse_semver(&a.version))
         });
         assert_eq!(releases[0].version, "master");
         assert_eq!(releases[1].version, "0.13.0");
         assert_eq!(releases[2].version, "0.12.0");
+    }
+
+    #[test]
+    fn parse_semver_numeric_ordering() {
+        // "0.9.1" > "0.16.0" lexicographically but < numerically — verify numeric wins.
+        assert!(parse_semver("0.16.0") > parse_semver("0.9.1"));
+    }
+
+    #[test]
+    fn stable_picks_highest_semver() {
+        // Mirrors the order fetch_versions produces after the numeric sort:
+        // master first, then 0.16.0 before 0.9.1.
+        let releases = vec![
+            make_release("master", true),
+            make_release("0.16.0", false),
+            make_release("0.9.1", false),
+        ];
+        let r = resolve_in(&releases, "stable").unwrap();
+        assert_eq!(r.version, "0.16.0");
     }
 }

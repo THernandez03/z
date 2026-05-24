@@ -8,86 +8,279 @@ use console::style;
 
 use crate::{cache, releases, symlink};
 
-/// Install a Zig version and activate it.
-pub fn install(version_str: &str) -> Result<()> {
-    let release = releases::resolve(version_str)?;
-    let version = &release.version;
-    let from = symlink::active_version();
+/// Returns `true` if the input is a symbolic alias resolved entirely via network.
+fn is_alias(s: &str) -> bool {
+    matches!(
+        s,
+        "lts"
+            | "stable"
+            | "current"
+            | "latest"
+            | "canary"
+            | "nightly"
+            | "next"
+            | "edge"
+            | "beta"
+            | "master"
+    )
+}
 
-    if from.as_deref() == Some(version.as_str()) {
+/// Returns `true` if the input looks like a bare version number.
+fn looks_like_version(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'x' | 'X'))
+}
+
+/// Returns `true` if the input looks like a git commit SHA (7-40 hex chars
+/// with at least one letter `a`-`f`).
+fn is_sha_input(s: &str) -> bool {
+    let n = s.len();
+    (7..=40).contains(&n)
+        && s.chars().all(|c| c.is_ascii_hexdigit())
+        && s.chars().any(|c| matches!(c, 'a'..='f' | 'A'..='F'))
+}
+
+/// Extract the base version (before any `+sha`) and the optional SHA from a
+/// Zig version string. Dev suffix `-dev.NNN` is stripped at the first `-`.
+///
+/// `"0.14.0-dev.321+abc1234e5"` → `("0.14.0", Some("abc1234e5"))`\
+/// `"0.13.0"` → `("0.13.0", None)`
+fn extract_ver_sha(tag: &str) -> (String, Option<&str>) {
+    let (ver_part, sha) = tag
+        .split_once('+')
+        .map_or((tag, None), |(v, s)| (v, Some(s)));
+    let clean_ver = ver_part.split('-').next().unwrap_or(ver_part).to_string();
+    (clean_ver, sha)
+}
+
+/// Query the installed zig binary to determine the canonical cache key.
+///
+/// `"0.13.0"` → `("0.13.0", None)`\
+/// `"0.14.0-dev.321+abc1234e5"` → `("0.14.0", Some("abc1234e5"))` (first 9 chars)
+fn query_binary_version(binary_path: &Path) -> Result<(String, Option<String>)> {
+    let out = Command::new(binary_path)
+        .arg("version")
+        .output()
+        .context("Failed to run zig version")?;
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let ver_str = raw.trim();
+    if let Some((base, sha)) = ver_str.split_once('+') {
+        // Strip dev channel suffix: "0.14.0-dev.321" → "0.14.0"
+        let clean_base = base.split('-').next().unwrap_or(base).to_string();
+        let short_sha = sha[..sha.len().min(9)].to_string();
+        Ok((clean_base, Some(short_sha)))
+    } else {
+        Ok((ver_str.to_string(), None))
+    }
+}
+
+/// Activate an already-cached version (update the symlink).
+fn activate_cached(tag: &str) -> Result<()> {
+    if symlink::active_version().as_deref() == Some(tag) {
         println!(
             "{} Zig {} is already the active version.",
-            style("✓").green().bold(),
-            style(version).cyan().bold(),
+            style("\u{2713}").green().bold(),
+            style(tag).cyan().bold(),
         );
         return Ok(());
     }
-
-    if cache::is_cached(version) {
-        println!(
-            "{} Zig {} is already cached.",
-            style("◆").dim(),
-            style(version).cyan(),
-        );
-    } else {
-        println!(
-            "{} Downloading Zig {}...",
-            style("⬇").cyan(),
-            style(version).cyan().bold(),
-        );
-        download_version(&release.tarball_url, version)?;
-    }
-
+    let from = symlink::active_version();
     match &from {
         Some(f) => println!(
-            "{} Activating Zig {} → {}...",
-            style("◆").magenta(),
+            "{} Activating Zig {} \u{2192} {}...",
+            style("\u{25c6}").magenta(),
             style(f).cyan(),
-            style(version).cyan().bold(),
+            style(tag).cyan().bold(),
         ),
         None => println!(
             "{} Activating Zig {}...",
-            style("◆").magenta(),
-            style(version).cyan().bold(),
+            style("\u{25c6}").magenta(),
+            style(tag).cyan().bold(),
         ),
     }
-    symlink::activate(version)?;
+    symlink::activate(tag)?;
     println!(
         "{} Installed Zig {} successfully.",
-        style("✓").green().bold(),
-        style(version).cyan().bold(),
+        style("\u{2713}").green().bold(),
+        style(tag).cyan().bold(),
     );
     Ok(())
 }
 
+/// Install a Zig version and activate it.
+pub fn install(version_str: &str) -> Result<()> {
+    let v = version_str.trim();
+
+    // 1. Pre-resolve cache check — skip network for version/SHA inputs
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                return activate_cached(&cached);
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                return activate_cached(&cached);
+            }
+        }
+    }
+
+    // 2. Resolve via network
+    let release = releases::resolve(v)?;
+    let raw_version = &release.version;
+
+    // 3. Post-resolve cache check (e.g. "canary" → "0.14.0-dev.321+abc1234e5")
+    {
+        let (ver_prefix, release_sha) = extract_ver_sha(raw_version);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (release_sha, cache::cache_key_sha(&cached)) {
+                (Some(rs), Some(cs)) => cache::sha_matches(cs, rs),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                return activate_cached(&cached);
+            }
+        }
+    }
+
+    // 4. Download if not already cached
+    if !cache::is_cached(raw_version) {
+        println!(
+            "{} Downloading Zig {}...",
+            style("\u{2b07}").cyan(),
+            style(raw_version).cyan().bold(),
+        );
+        download_version(&release.tarball_url, raw_version)?;
+    }
+
+    // 5. Query the installed binary to get the canonical cache key
+    let binary = cache::zig_binary(raw_version);
+    let canonical = match query_binary_version(&binary) {
+        Ok((ver, sha_opt)) => sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}")),
+        Err(_) => raw_version.clone(),
+    };
+    if canonical != *raw_version {
+        cache::rename_version(raw_version, &canonical)?;
+    }
+
+    activate_cached(&canonical)
+}
+
 /// Download a version into cache without activating it.
 pub fn download_only(version_str: &str) -> Result<()> {
-    let release = releases::resolve(version_str)?;
-    let version = &release.version;
-    if cache::is_cached(version) {
-        println!("Version {version} is already cached.");
+    let v = version_str.trim();
+
+    // Pre-resolve cache check
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        }
+    }
+
+    let release = releases::resolve(v)?;
+    let raw_version = &release.version;
+
+    // Post-resolve cache check
+    {
+        let (ver_prefix, release_sha) = extract_ver_sha(raw_version);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (release_sha, cache::cache_key_sha(&cached)) {
+                (Some(rs), Some(cs)) => cache::sha_matches(cs, rs),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                println!("Version {cached} is already cached.");
+                return Ok(());
+            }
+        }
+    }
+
+    if cache::is_cached(raw_version) {
+        println!("Version {raw_version} is already cached.");
         return Ok(());
     }
-    println!("Downloading Zig {version}...");
-    download_version(&release.tarball_url, version)
+    println!("Downloading Zig {raw_version}...");
+    download_version(&release.tarball_url, raw_version)?;
+    let binary = cache::zig_binary(raw_version);
+    if let Ok((ver, sha_opt)) = query_binary_version(&binary) {
+        let canonical = sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}"));
+        if canonical != *raw_version {
+            cache::rename_version(raw_version, &canonical)?;
+        }
+    }
+    Ok(())
 }
 
 /// Run a cached Zig version with given arguments.
 pub fn run(version_str: &str, args: &[String]) -> Result<()> {
-    let release = releases::resolve(version_str)?;
-    let version = &release.version;
+    let v = version_str.trim();
 
-    if !cache::is_cached(version) {
-        println!("Version {version} is not cached. Downloading...");
-        download_version(&release.tarball_url, version)?;
+    // Pre-resolve cache check
+    if !is_alias(v) {
+        if is_sha_input(v) {
+            if let Some(cached) = cache::find_by_sha(v) {
+                return run_cached(&cached, args);
+            }
+        } else if looks_like_version(v) {
+            let prefix = v.trim_end_matches(".x").trim_end_matches(".X");
+            if let Some(cached) = cache::find_by_version_prefix(prefix) {
+                return run_cached(&cached, args);
+            }
+        }
     }
 
-    let binary = cache::zig_binary(version);
+    let release = releases::resolve(v)?;
+    let raw_version = &release.version;
+
+    // Post-resolve cache check
+    {
+        let (ver_prefix, release_sha) = extract_ver_sha(raw_version);
+        if let Some(cached) = cache::find_by_version_prefix(&ver_prefix) {
+            let sha_ok = match (release_sha, cache::cache_key_sha(&cached)) {
+                (Some(rs), Some(cs)) => cache::sha_matches(cs, rs),
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            if sha_ok {
+                return run_cached(&cached, args);
+            }
+        }
+    }
+
+    if !cache::is_cached(raw_version) {
+        println!("Version {raw_version} is not cached. Downloading...");
+        download_version(&release.tarball_url, raw_version)?;
+    }
+
+    let binary = cache::zig_binary(raw_version);
+    let canonical = match query_binary_version(&binary) {
+        Ok((ver, sha_opt)) => sha_opt.map_or_else(|| ver.clone(), |s| format!("{ver}+{s}")),
+        Err(_) => raw_version.clone(),
+    };
+    if canonical != *raw_version {
+        cache::rename_version(raw_version, &canonical)?;
+    }
+    run_cached(&canonical, args)
+}
+
+fn run_cached(tag: &str, args: &[String]) -> Result<()> {
+    let binary = cache::zig_binary(tag);
     let status = Command::new(&binary)
         .args(args)
         .status()
-        .with_context(|| format!("Failed to run zig {version}"))?;
-
+        .with_context(|| format!("Failed to run zig {tag}"))?;
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
@@ -184,7 +377,19 @@ fn flatten_single_dir(dir: &Path) -> Result<()> {
 /// Remove a cached version, or prompt for interactive selection if no version is given.
 pub fn remove_version(version: Option<String>) -> Result<()> {
     if let Some(v) = version {
-        cache::remove(&v)?;
+        if cache::is_cached(&v) {
+            cache::remove(&v)?;
+        } else if is_sha_input(&v) {
+            if let Some(matched) = cache::find_by_sha(&v) {
+                cache::remove(&matched)?;
+            } else {
+                println!("Version '{v}' is not cached.");
+            }
+        } else if let Some(matched) = cache::find_by_version_prefix(&v) {
+            cache::remove(&matched)?;
+        } else {
+            println!("Version '{v}' is not cached.");
+        }
         return Ok(());
     }
     let versions = cache::cached_versions()?;
@@ -313,17 +518,19 @@ pub fn update_self() -> Result<()> {
 }
 
 /// Uninstall this version manager completely (removes cache, prefix directory, and the binary).
-pub fn uninstall_self() -> Result<()> {
+pub fn uninstall_self(yes: bool) -> Result<()> {
     let name = env!("CARGO_PKG_NAME");
-    let confirmed = dialoguer::Confirm::new()
-        .with_prompt(format!(
-            "This will remove all cached versions and the {name} binary. Continue?"
-        ))
-        .default(false)
-        .interact()?;
-    if !confirmed {
-        println!("{}", style("Aborted.").yellow());
-        return Ok(());
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "This will remove all cached versions and the {name} binary. Continue?"
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            println!("{}", style("Aborted.").yellow());
+            return Ok(());
+        }
     }
     println!("Uninstalling {}...", style(name).cyan().bold());
     let prefix = symlink::prefix();
@@ -344,4 +551,142 @@ pub fn uninstall_self() -> Result<()> {
             .map_or_else(String::new, |p| p.display().to_string())
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_dirs<F: FnOnce(&std::path::Path, &std::path::Path)>(f: F) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cache = tempfile::tempdir().expect("tempdir");
+        let prefix = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("Z_CACHE_DIR", cache.path());
+        std::env::set_var("Z_PREFIX", prefix.path());
+        f(cache.path(), prefix.path());
+        std::env::remove_var("Z_CACHE_DIR");
+        std::env::remove_var("Z_PREFIX");
+    }
+
+    // ── download_only cache hit ─────────────────────────────────────
+
+    #[test]
+    fn download_only_skips_if_already_cached() {
+        with_temp_dirs(|cache, _prefix| {
+            // Zig binary path: {cache}/{tag}/zig (no bin/ subdir).
+            // resolve("0.13.0") would hit the network; use find_by_version_prefix
+            // via the pre-resolve path (looks_like_version) to avoid it.
+            let vdir = cache.join("0.13.0");
+            fs::create_dir_all(&vdir).unwrap();
+            fs::write(vdir.join("zig"), b"fake").unwrap();
+            // The pre-resolve path calls find_by_version_prefix("0.13.0") which
+            // finds the binary above and returns Ok without network access.
+            let result = download_only("0.13.0");
+            assert!(
+                result.is_ok(),
+                "should skip download when cached: {result:?}"
+            );
+        });
+    }
+
+    // ── is_alias ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_alias_known_aliases() {
+        assert!(is_alias("lts"));
+        assert!(is_alias("stable"));
+        assert!(is_alias("current"));
+        assert!(is_alias("latest"));
+        assert!(is_alias("canary"));
+        assert!(is_alias("nightly"));
+        assert!(is_alias("next"));
+        assert!(is_alias("edge"));
+        assert!(is_alias("beta"));
+        assert!(is_alias("master"));
+    }
+
+    #[test]
+    fn is_alias_version_not_alias() {
+        assert!(!is_alias("0.13.0"));
+        assert!(!is_alias("abc1234d"));
+        assert!(!is_alias(""));
+    }
+
+    // ── looks_like_version ──────────────────────────────────────────
+
+    #[test]
+    fn looks_like_version_semver() {
+        assert!(looks_like_version("0.13.0"));
+        assert!(looks_like_version("0.12.0"));
+    }
+
+    #[test]
+    fn looks_like_version_x_notation() {
+        assert!(looks_like_version("0.x"));
+        assert!(looks_like_version("0.13.X"));
+    }
+
+    #[test]
+    fn looks_like_version_non_versions() {
+        assert!(!looks_like_version("master"));
+        assert!(!looks_like_version("v0.13.0"));
+        assert!(!looks_like_version("abc1234d"));
+    }
+
+    // ── is_sha_input ───────────────────────────────────────────────
+
+    #[test]
+    fn is_sha_input_valid() {
+        assert!(is_sha_input("abc1234d"));
+        assert!(is_sha_input("abc1234def5678"));
+    }
+
+    #[test]
+    fn is_sha_input_too_short() {
+        assert!(!is_sha_input("abc123"));
+    }
+
+    #[test]
+    fn is_sha_input_all_digits_rejected() {
+        assert!(!is_sha_input("12345678"));
+    }
+
+    #[test]
+    fn is_sha_input_non_hex_rejected() {
+        assert!(!is_sha_input("abc1234g"));
+    }
+
+    // ── extract_ver_sha ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_ver_sha_with_sha() {
+        let (ver, sha) = extract_ver_sha("0.13.0+abc1234def");
+        assert_eq!(ver, "0.13.0");
+        assert_eq!(sha, Some("abc1234def"));
+    }
+
+    #[test]
+    fn extract_ver_sha_without_sha() {
+        let (ver, sha) = extract_ver_sha("0.13.0");
+        assert_eq!(ver, "0.13.0");
+        assert!(sha.is_none());
+    }
+
+    #[test]
+    fn extract_ver_sha_strips_dev_suffix() {
+        let (ver, sha) = extract_ver_sha("0.14.0-dev.321+abc1234de");
+        assert_eq!(ver, "0.14.0");
+        assert_eq!(sha, Some("abc1234de"));
+    }
+
+    #[test]
+    fn extract_ver_sha_dev_no_sha() {
+        let (ver, sha) = extract_ver_sha("0.14.0-dev.321");
+        assert_eq!(ver, "0.14.0");
+        assert!(sha.is_none());
+    }
 }

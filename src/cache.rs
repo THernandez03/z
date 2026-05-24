@@ -54,7 +54,8 @@ pub fn remove(version: &str) -> Result<()> {
 }
 
 /// Remove all cached versions except the currently active one.
-pub fn prune() -> Result<()> {
+/// When `force` is `true`, all versions including the active one are removed.
+pub fn prune(force: bool) -> Result<()> {
     let active = crate::symlink::active_version();
     let dir = cache_dir();
 
@@ -66,7 +67,8 @@ pub fn prune() -> Result<()> {
     for entry in fs::read_dir(&dir).context("Failed to read cache directory")? {
         let entry = entry?;
         let name = entry.file_name().into_string().unwrap_or_default();
-        if Some(&name) == active.as_ref() {
+        if !force && Some(&name) == active.as_ref() {
+            println!("Skipped {name} (active — use --force to remove)");
             continue;
         }
         if entry.path().is_dir() {
@@ -74,6 +76,108 @@ pub fn prune() -> Result<()> {
                 .with_context(|| format!("Failed to remove '{name}'"))?;
             println!("Removed {name}");
         }
+    }
+    Ok(())
+}
+
+/// Returns `true` if `a` is a prefix of `b` or `b` is a prefix of `a`.
+/// Used for fuzzy SHA matching between stored (short) and user-provided (long) SHAs.
+pub fn sha_matches(a: &str, b: &str) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+/// Returns the SHA portion of a cache key (the part after `+`), if any.
+pub fn cache_key_sha(key: &str) -> Option<&str> {
+    key.split_once('+').map(|(_, sha)| sha)
+}
+
+/// Find a cached version matching the given version prefix.
+///
+/// A match occurs when the cache-directory name equals `prefix` exactly, starts
+/// with `"{prefix}+"` (exact version with SHA), or starts with `"{prefix}."`
+/// (partial version, e.g. `"0.13"` matches `"0.13.0"`).
+/// If multiple entries match, the most recently modified is returned.
+pub fn find_by_version_prefix(prefix: &str) -> Option<String> {
+    let dir = cache_dir();
+    if !dir.exists() {
+        return None;
+    }
+    let prefix_plus = format!("{prefix}+");
+    let prefix_dot = format!("{prefix}.");
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if (name == prefix || name.starts_with(&prefix_plus) || name.starts_with(&prefix_dot))
+            && zig_binary(&name).exists()
+        {
+            let mtime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let is_newer = best.as_ref().map_or(true, |(t, _)| mtime > *t);
+            if is_newer {
+                best = Some((mtime, name));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Find a cached version whose SHA component fuzzy-matches the given SHA.
+///
+/// The SHA component is the part after `+` in the cache key.
+/// If multiple entries match, the most recently modified is returned.
+pub fn find_by_sha(sha: &str) -> Option<String> {
+    let dir = cache_dir();
+    if !dir.exists() {
+        return None;
+    }
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if let Some(cached_sha) = cache_key_sha(&name) {
+            if sha_matches(cached_sha, sha) && zig_binary(&name).exists() {
+                let mtime = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                let is_newer = best.as_ref().map_or(true, |(t, _)| mtime > *t);
+                if is_newer {
+                    best = Some((mtime, name));
+                }
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Rename a cached version directory from `old_key` to `new_key`.
+/// No-op if `old_key` does not exist or `new_key` already exists.
+pub fn rename_version(old_key: &str, new_key: &str) -> Result<()> {
+    let old_dir = version_dir(old_key);
+    let new_dir = version_dir(new_key);
+    if old_dir.exists() && !new_dir.exists() {
+        fs::rename(&old_dir, &new_dir).with_context(|| {
+            format!("Failed to rename cache entry '{old_key}' \u{2192} '{new_key}'")
+        })?;
     }
     Ok(())
 }
@@ -255,12 +359,212 @@ mod tests {
         // Write active marker
         fs::write(prefix_dir.path().join(".active"), "0.13.0").unwrap();
 
-        prune().unwrap();
+        prune(false).unwrap();
 
         assert!(!cache.join("0.11.0").exists());
         assert!(!cache.join("0.12.0").exists());
         assert!(cache.join("0.13.0").exists());
 
         std::env::remove_var("Z_PREFIX");
+    }
+
+    #[test]
+    fn prune_force_removes_all_versions() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let prefix_dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("Z_PREFIX", prefix_dir.path());
+        std::env::remove_var("Z_CACHE_DIR");
+
+        let cache = prefix_dir.path().join("versions");
+        fs::create_dir_all(&cache).unwrap();
+
+        for v in &["0.11.0", "0.12.0", "0.13.0"] {
+            fs::create_dir_all(cache.join(v)).unwrap();
+        }
+
+        fs::write(prefix_dir.path().join(".active"), "0.13.0").unwrap();
+
+        prune(true).unwrap();
+
+        assert!(
+            !cache.join("0.11.0").exists(),
+            "--force should remove inactive"
+        );
+        assert!(
+            !cache.join("0.12.0").exists(),
+            "--force should remove inactive"
+        );
+        assert!(
+            !cache.join("0.13.0").exists(),
+            "--force should remove active"
+        );
+
+        std::env::remove_var("Z_PREFIX");
+    }
+
+    fn make_cached_zig(tag: &str) {
+        let path = zig_binary(tag);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"fake").unwrap();
+    }
+
+    // ── sha_matches ───────────────────────────────────────────────────
+
+    #[test]
+    fn sha_matches_identical() {
+        assert!(sha_matches("abc1234def", "abc1234def"));
+    }
+
+    #[test]
+    fn sha_matches_a_prefix_of_b() {
+        assert!(sha_matches("abc1234", "abc1234def5678"));
+    }
+
+    #[test]
+    fn sha_matches_b_prefix_of_a() {
+        assert!(sha_matches("abc1234def5678", "abc1234"));
+    }
+
+    #[test]
+    fn sha_matches_unrelated_returns_false() {
+        assert!(!sha_matches("abc1234", "def5678"));
+    }
+
+    // ── cache_key_sha ─────────────────────────────────────────────────
+
+    #[test]
+    fn cache_key_sha_present() {
+        assert_eq!(cache_key_sha("0.13.0+abc1234def"), Some("abc1234def"));
+    }
+
+    #[test]
+    fn cache_key_sha_absent() {
+        assert!(cache_key_sha("0.13.0").is_none());
+    }
+
+    // ── find_by_version_prefix ────────────────────────────────────────
+
+    #[test]
+    fn find_by_version_prefix_exact() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0");
+            assert_eq!(find_by_version_prefix("0.13.0"), Some("0.13.0".to_string()));
+        });
+    }
+
+    #[test]
+    fn find_by_version_prefix_with_sha_suffix() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0+abc1234def");
+            assert_eq!(
+                find_by_version_prefix("0.13.0"),
+                Some("0.13.0+abc1234def".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn find_by_version_prefix_dot_match() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0");
+            assert_eq!(find_by_version_prefix("0.13"), Some("0.13.0".to_string()));
+        });
+    }
+
+    #[test]
+    fn find_by_version_prefix_no_match() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0");
+            assert!(find_by_version_prefix("0.12.0").is_none());
+        });
+    }
+
+    #[test]
+    fn find_by_version_prefix_requires_binary() {
+        with_temp_cache(|base| {
+            fs::create_dir_all(base.join("0.13.0")).unwrap();
+            assert!(find_by_version_prefix("0.13.0").is_none());
+        });
+    }
+
+    // ── find_by_sha ───────────────────────────────────────────────────
+
+    #[test]
+    fn find_by_sha_exact() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0+abc1234def");
+            assert_eq!(
+                find_by_sha("abc1234def"),
+                Some("0.13.0+abc1234def".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn find_by_sha_input_prefix_of_stored() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0+abc1234def5678");
+            assert_eq!(
+                find_by_sha("abc1234d"),
+                Some("0.13.0+abc1234def5678".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn find_by_sha_stored_prefix_of_input() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0+abc1234d");
+            assert_eq!(
+                find_by_sha("abc1234def5678"),
+                Some("0.13.0+abc1234d".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn find_by_sha_no_match() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0+abc1234def");
+            assert!(find_by_sha("xyz99999").is_none());
+        });
+    }
+
+    #[test]
+    fn find_by_sha_ignores_entry_without_sha() {
+        with_temp_cache(|_| {
+            make_cached_zig("0.13.0");
+            assert!(find_by_sha("01300").is_none());
+        });
+    }
+
+    // ── rename_version ────────────────────────────────────────────────
+
+    #[test]
+    fn rename_version_moves_dir() {
+        with_temp_cache(|base| {
+            fs::create_dir_all(base.join("0.13.0")).unwrap();
+            rename_version("0.13.0", "0.13.0+abc1234def").unwrap();
+            assert!(!base.join("0.13.0").exists());
+            assert!(base.join("0.13.0+abc1234def").exists());
+        });
+    }
+
+    #[test]
+    fn rename_version_noop_when_old_missing() {
+        with_temp_cache(|_| {
+            assert!(rename_version("nonexistent", "also-nonexistent").is_ok());
+        });
+    }
+
+    #[test]
+    fn rename_version_noop_when_new_exists() {
+        with_temp_cache(|base| {
+            fs::create_dir_all(base.join("0.13.0")).unwrap();
+            fs::create_dir_all(base.join("0.13.0+abc1234def")).unwrap();
+            rename_version("0.13.0", "0.13.0+abc1234def").unwrap();
+            assert!(base.join("0.13.0").exists());
+            assert!(base.join("0.13.0+abc1234def").exists());
+        });
     }
 }
