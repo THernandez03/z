@@ -92,7 +92,8 @@ enum Commands {
     Info,
     /// Update z to the latest available version
     Update,
-    /// Uninstall z completely (removes cached versions, prefix, and the z binary)
+    /// Uninstall z completely (removes cached versions, prefix, and the z binary).
+    /// Use `--yes`/`-y` to skip the confirmation prompt.
     Uninstall {
         /// Skip the confirmation prompt.
         #[arg(short, long)]

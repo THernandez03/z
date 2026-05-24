@@ -94,6 +94,9 @@ z rm 0.12.0         # alias
 # Remove all cached versions except the active one
 z prune
 
+# Also remove the active version
+z prune --force
+
 # Show info
 z info
 
@@ -102,6 +105,7 @@ z update
 
 # Fully remove z + all cached versions (requires confirmation)
 z uninstall
+z uninstall --yes   # skip confirmation prompt
 ```
 
 ## Version Aliases
