@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/THernandez03/z/compare/z-v0.5.0...z-v0.5.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* 🐛 Strip name prefix from self-update version tag ([4e736a7](https://github.com/THernandez03/z/commit/4e736a70c69ca1227edcc2045a4dae3af3149e9e))
+
 ## [0.5.0](https://github.com/THernandez03/z/compare/z-v0.4.0...z-v0.5.0) (2026-05-24)
 
 
